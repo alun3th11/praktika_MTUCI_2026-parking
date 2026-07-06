@@ -1,0 +1,321 @@
+import json
+import os
+from datetime import datetime
+from typing import List, Dict, Any, Optional
+
+class JSONDatabase:
+    """
+    Простой класс для работы с JSON-базой данных
+    """
+    
+    def __init__(self, db_path: str = 'database.json'):
+        """
+        Инициализация базы данных
+        
+        Args:
+            db_path: путь к JSON-файлу
+        """
+        self.db_path = db_path
+        self.data = self._load()
+    
+    def _load(self) -> Dict:
+        """Загружает данные из JSON-файла"""
+        if os.path.exists(self.db_path):
+            try:
+                with open(self.db_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, FileNotFoundError):
+                return self._get_empty_structure()
+        return self._get_empty_structure()
+    
+    def _get_empty_structure(self) -> Dict:
+        """Возвращает пустую структуру базы данных"""
+        return {
+            'meta': {
+                'created_at': datetime.now().isoformat(),
+                'last_updated': datetime.now().isoformat(),
+                'version': '1.0'
+            },
+            'models': [],           # Информация о моделях
+            'training_history': [], # История обучения
+            'predictions': [],      # История предсказаний
+            'statistics': {}        # Статистика
+        }
+    
+    def _save(self):
+        """Сохраняет данные в JSON-файл"""
+        self.data['meta']['last_updated'] = datetime.now().isoformat()
+        with open(self.db_path, 'w', encoding='utf-8') as f:
+            json.dump(self.data, f, indent=2, ensure_ascii=False)
+    
+    def add_model(self, model_data: Dict):
+        """
+        Добавляет информацию о модели
+        
+        Args:
+            model_data: словарь с данными модели
+                {
+                    'name': 'ResNet-18',
+                    'accuracy': 97.20,
+                    'f1_score': 0.972,
+                    'time_ms': 45.2,
+                    'size_mb': 44.3,
+                    'params': 11.7,
+                    'date_trained': '2026-07-03 12:00:00'
+                }
+        """
+        # Добавляем timestamp, если его нет
+        if 'date_trained' not in model_data:
+            model_data['date_trained'] = datetime.now().isoformat()
+        
+        # Проверяем, есть ли уже такая модель
+        existing = next((m for m in self.data['models'] if m['name'] == model_data['name']), None)
+        if existing:
+            existing.update(model_data)
+        else:
+            self.data['models'].append(model_data)
+        
+        self._update_statistics()
+        self._save()
+    
+    def get_model(self, name: str) -> Optional[Dict]:
+        """Возвращает данные модели по имени"""
+        return next((m for m in self.data['models'] if m['name'] == name), None)
+    
+    def get_all_models(self) -> List[Dict]:
+        """Возвращает все модели"""
+        return self.data['models']
+    
+    def get_best_model(self) -> Optional[Dict]:
+        """Возвращает лучшую модель по accuracy"""
+        if not self.data['models']:
+            return None
+        return max(self.data['models'], key=lambda x: x.get('accuracy', 0))
+    
+    def delete_model(self, name: str) -> bool:
+        """Удаляет модель по имени"""
+        initial_len = len(self.data['models'])
+        self.data['models'] = [m for m in self.data['models'] if m['name'] != name]
+        if len(self.data['models']) < initial_len:
+            self._update_statistics()
+            self._save()
+            return True
+        return False
+
+    def add_training_record(self, record: Dict):
+        """
+        Добавляет запись об обучении
+        
+        Args:
+            record: словарь с данными обучения
+                {
+                    'model': 'ResNet-18',
+                    'epochs': 20,
+                    'batch_size': 64,
+                    'learning_rate': 0.001,
+                    'train_time': 120.5,
+                    'best_val_acc': 98.12,
+                    'date': '2026-07-03 12:00:00'
+                }
+        """
+        if 'date' not in record:
+            record['date'] = datetime.now().isoformat()
+        self.data['training_history'].append(record)
+        self._save()
+    
+    def get_training_history(self, model: Optional[str] = None) -> List[Dict]:
+        """Возвращает историю обучения (опционально по модели)"""
+        if model:
+            return [r for r in self.data['training_history'] if r.get('model') == model]
+        return self.data['training_history']
+    
+    def add_prediction(self, prediction: Dict):
+        """
+        Добавляет запись о предсказании
+        
+        Args:
+            prediction: словарь с данными предсказания
+                {
+                    'image': 'photo.jpg',
+                    'model': 'EfficientNet-B0',
+                    'prediction': 'Busy',
+                    'confidence': 98.23,
+                    'timestamp': '2026-07-03 12:00:00'
+                }
+        """
+        if 'timestamp' not in prediction:
+            prediction['timestamp'] = datetime.now().isoformat()
+        self.data['predictions'].append(prediction)
+        self._save()
+    
+    def get_predictions(self, limit: Optional[int] = None, model: Optional[str] = None) -> List[Dict]:
+        """
+        Возвращает историю предсказаний
+        
+        Args:
+            limit: максимальное количество записей
+            model: фильтр по модели
+        """
+        preds = self.data['predictions']
+        if model:
+            preds = [p for p in preds if p.get('model') == model]
+        if limit:
+            preds = preds[-limit:]
+        return preds
+    
+    def get_prediction_stats(self) -> Dict:
+        """
+        Возвращает статистику по предсказаниям
+        """
+        preds = self.data['predictions']
+        if not preds:
+            return {'total': 0, 'busy': 0, 'free': 0, 'avg_confidence': 0}
+        
+        total = len(preds)
+        busy = sum(1 for p in preds if p.get('prediction') == 'Busy')
+        free = total - busy
+        avg_conf = sum(p.get('confidence', 0) for p in preds) / total
+        
+        return {
+            'total': total,
+            'busy': busy,
+            'free': free,
+            'avg_confidence': avg_conf
+        }
+    
+    def _update_statistics(self):
+        """Обновляет общую статистику"""
+        models = self.data['models']
+        
+        if models:
+            best = max(models, key=lambda x: x.get('accuracy', 0))
+            fastest = min(models, key=lambda x: x.get('time_ms', float('inf')))
+            smallest = min(models, key=lambda x: x.get('size_mb', float('inf')))
+            
+            self.data['statistics'] = {
+                'total_models': len(models),
+                'best_model': {
+                    'name': best.get('name'),
+                    'accuracy': best.get('accuracy')
+                },
+                'fastest_model': {
+                    'name': fastest.get('name'),
+                    'time_ms': fastest.get('time_ms')
+                },
+                'smallest_model': {
+                    'name': smallest.get('name'),
+                    'size_mb': smallest.get('size_mb')
+                },
+                'total_predictions': len(self.data['predictions'])
+            }
+        else:
+            self.data['statistics'] = {}
+    
+    def get_statistics(self) -> Dict:
+        """Возвращает статистику"""
+        self._update_statistics()
+        return self.data['statistics']
+    
+    def export_to_excel(self, filename: str = 'database_export.xlsx'):
+        """
+        Экспортирует данные в Excel
+        """
+        import pandas as pd
+        
+        with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+            # Модели
+            if self.data['models']:
+                pd.DataFrame(self.data['models']).to_excel(writer, sheet_name='Models', index=False)
+            
+            # История обучения
+            if self.data['training_history']:
+                pd.DataFrame(self.data['training_history']).to_excel(writer, sheet_name='Training', index=False)
+            
+            # Предсказания
+            if self.data['predictions']:
+                pd.DataFrame(self.data['predictions']).to_excel(writer, sheet_name='Predictions', index=False)
+            
+            # Статистика
+            if self.data['statistics']:
+                pd.DataFrame([self.data['statistics']]).to_excel(writer, sheet_name='Statistics', index=False)
+        
+        print(f" Database exported to {filename}")
+    
+    def clear_history(self):
+        """Очищает историю предсказаний (но не модели)"""
+        self.data['predictions'] = []
+        self.data['training_history'] = []
+        self._save()
+    
+    def backup(self, backup_path: Optional[str] = None):
+        """Создаёт бэкап базы данных"""
+        if backup_path is None:
+            backup_path = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        
+        with open(backup_path, 'w', encoding='utf-8') as f:
+            json.dump(self.data, f, indent=2, ensure_ascii=False)
+        print(f" Backup saved to {backup_path}")
+
+
+if __name__ == "__main__":
+    # Создаём базу данных
+    db = JSONDatabase('parking_db.json')
+    
+    # Добавляем модели
+    db.add_model({
+        'name': 'ResNet-18',
+        'accuracy': 97.20,
+        'f1_score': 0.972,
+        'time_ms': 45.2,
+        'size_mb': 44.3,
+        'params': 11.7
+    })
+    
+    db.add_model({
+        'name': 'EfficientNet-B0',
+        'accuracy': 98.23,
+        'f1_score': 0.9825,
+        'time_ms': 6.94,
+        'size_mb': 15.6,
+        'params': 5.3
+    })
+    
+    # Добавляем запись об обучении
+    db.add_training_record({
+        'model': 'EfficientNet-B0',
+        'epochs': 20,
+        'batch_size': 64,
+        'learning_rate': 0.001,
+        'train_time': 2048.19,
+        'best_val_acc': 99.23
+    })
+    
+    # Добавляем предсказания
+    db.add_prediction({
+        'image': 'test1.jpg',
+        'model': 'EfficientNet-B0',
+        'prediction': 'Busy',
+        'confidence': 98.23
+    })
+    
+    db.add_prediction({
+        'image': 'test2.jpg',
+        'model': 'EfficientNet-B0',
+        'prediction': 'Free',
+        'confidence': 97.45
+    })
+    
+    # Получаем статистику
+    stats = db.get_statistics()
+    print(" Database statistics:")
+    print(f"  Total models: {stats.get('total_models', 0)}")
+    print(f"  Best model: {stats.get('best_model', {}).get('name')}")
+    
+    pred_stats = db.get_prediction_stats()
+    print(f"  Total predictions: {pred_stats['total']}")
+    print(f"  Busy: {pred_stats['busy']}, Free: {pred_stats['free']}")
+    
+    # Экспорт
+    db.export_to_excel('database_export.xlsx')
+    
+    print("\n Database ready: parking_db.json")
