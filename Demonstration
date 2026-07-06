@@ -1,0 +1,411 @@
+import os, torch, torchvision.transforms as transforms
+from PIL import Image, ImageTk
+import pandas as pd
+from pathlib import Path
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+import threading, time
+from datetime import datetime
+import torchvision.models as models
+
+CLASS_NAMES = {
+    0: " СВОБОДНО",
+    1: " ЗАНЯТО"
+}
+
+CLASS_COLORS = {
+    0: "#4CAF50",  # зелёный (свободно)
+    1: "#F44336"   # красный (занято)
+}
+
+def load_model(model_path, num_classes=2):
+    if 'EfficientNet' in model_path:
+        model = models.efficientnet_b0(pretrained=False)
+        model.classifier[1] = torch.nn.Linear(model.classifier[1].in_features, num_classes)
+    elif 'DenseNet' in model_path:
+        model = models.densenet121(pretrained=False)
+        model.classifier = torch.nn.Linear(model.classifier.in_features, num_classes)
+    elif 'ResNet-18' in model_path:
+        model = models.resnet18(pretrained=False)
+        model.fc = torch.nn.Linear(model.fc.in_features, num_classes)
+    elif 'ResNet-50' in model_path:
+        model = models.resnet50(pretrained=False)
+        model.fc = torch.nn.Linear(model.fc.in_features, num_classes)
+    elif 'MobileNet' in model_path:
+        model = models.mobilenet_v3_large(pretrained=False)
+        model.classifier[3] = torch.nn.Linear(model.classifier[3].in_features, num_classes)
+    elif 'ViT' in model_path:
+        model = models.vit_b_16(pretrained=False)
+        model.heads = torch.nn.Linear(model.heads.head.in_features, num_classes)
+    else:
+        raise ValueError(f"Неизвестная модель: {model_path}")
+    
+    # Загружаем веса
+    checkpoint = torch.load(model_path, map_location='cpu')
+    
+    if isinstance(checkpoint, dict):
+        state_dict = None
+        for key in ['model_state_dict', 'state_dict', 'model']:
+            if key in checkpoint:
+                state_dict = checkpoint[key]
+                break
+        if state_dict is None:
+            state_dict = checkpoint
+        
+        model_dict = model.state_dict()
+        filtered_dict = {k: v for k, v in state_dict.items() 
+                        if k in model_dict and v.shape == model_dict[k].shape}
+        model_dict.update(filtered_dict)
+        model.load_state_dict(model_dict, strict=False)
+    
+    model.eval()
+    return model
+
+class App:
+    def __init__(self, root):
+        self.root = root
+        self.root.title(" Детектор парковочных мест")
+        self.root.geometry("1100x700")
+        self.root.configure(bg='#f0f0f0')
+        
+        # Переменные
+        self.model = None
+        self.model_path = None
+        self.folder = None
+        self.results = []
+        self.current_idx = 0
+        self.transform = transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
+        
+        # Список моделей - ИСПРАВЛЕНО: ищем в папке со скриптом
+        self.models = {}
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Проверяем несколько папок
+        search_dirs = [
+            script_dir,  # папка со скриптом
+            os.path.join(script_dir, 'models'),  # подпапка models
+            os.path.join(script_dir, 'model'),   # подпапка model
+            os.path.join(script_dir, '..', 'models'),  # папка выше
+            '.'  # текущая директория
+        ]
+        
+        found_models = []
+        for search_dir in search_dirs:
+            if os.path.exists(search_dir):
+                for f in os.listdir(search_dir):
+                    full_path = os.path.join(search_dir, f)
+                    if os.path.isfile(full_path) and f.endswith('.pth') and 'best' in f.lower():
+                        # Извлекаем имя модели из имени файла
+                        name = f.replace('best_', '').replace('.pth', '').replace('_best', '')
+                        # Если имя уже существует, добавляем путь
+                        if name in self.models:
+                            name = f"{name} ({os.path.basename(search_dir)})"
+                        self.models[name] = full_path
+                        found_models.append(full_path)
+                        print(f"Найдена модель: {full_path}")
+        
+        if not found_models:
+            print("Модели не найдены. Проверьте папки:")
+            for d in search_dirs:
+                if os.path.exists(d):
+                    print(f"  - {d} содержит: {os.listdir(d) if os.path.exists(d) else 'не существует'}")
+        
+        self.create_ui()
+    
+    def create_ui(self):
+        # Заголовок
+        top = tk.Frame(self.root, bg='#2196F3', height=60)
+        top.pack(fill='x')
+        top.pack_propagate(False)
+        
+        tk.Label(top, text=" Детектор парковочных мест", 
+                font=('Arial', 18, 'bold'), fg='white', bg='#2196F3').pack(pady=10)
+        
+        # Основной контейнер
+        main = tk.Frame(self.root, bg='#f0f0f0')
+        main.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        left = tk.Frame(main, bg='white', relief='ridge', bd=2)
+        left.pack(side='left', fill='y', padx=(0, 10), ipadx=10, ipady=10)
+        
+        # Модель
+        tk.Label(left, text=" Модель:", font=('Arial', 11, 'bold')).pack(anchor='w')
+        self.model_var = tk.StringVar()
+        
+        # Проверяем, есть ли модели
+        model_list = list(self.models.keys())
+        if not model_list:
+            model_list = ["Модели не найдены"]
+        
+        cb = ttk.Combobox(left, textvariable=self.model_var, 
+                         values=model_list, state='readonly', width=30)
+        cb.pack(pady=5, fill='x')
+        
+        if model_list and model_list[0] != "Модели не найдены":
+            cb.current(0)
+            cb.bind('<<ComboboxSelected>>', self.load_model_callback)
+            # Автоматически загружаем первую модель
+            self.root.after(100, lambda: self.load_model_callback(None))
+        else:
+            cb.config(state='disabled')
+        
+        self.model_status = tk.Label(left, text=" Модель не загружена", 
+                                     fg='red', font=('Arial', 10))
+        self.model_status.pack(pady=5)
+        
+        # Информация о поиске моделей
+        if not self.models:
+            info_text = "Модели не найдены!\n"
+            info_text += f"Ищите .pth файлы в:\n"
+            info_text += f"  {os.path.dirname(os.path.abspath(__file__))}\n"
+            info_text += f"  или в подпапке 'models'"
+            tk.Label(left, text=info_text, fg='orange', 
+                    font=('Arial', 9), justify='left').pack(pady=5)
+        
+        # Папка
+        tk.Label(left, text=" Папка:", font=('Arial', 11, 'bold')).pack(anchor='w', pady=(10,0))
+        f_frame = tk.Frame(left)
+        f_frame.pack(fill='x', pady=5)
+        self.folder_path = tk.StringVar()
+        tk.Entry(f_frame, textvariable=self.folder_path, width=25, state='readonly').pack(side='left')
+        tk.Button(f_frame, text="Обзор", command=self.select_folder, 
+                 bg='#4CAF50', fg='white', font=('Arial', 9)).pack(side='left', padx=5)
+        
+        self.folder_status = tk.Label(left, text=" Папка не выбрана", 
+                                      fg='red', font=('Arial', 10))
+        self.folder_status.pack(pady=5)
+        
+        # Запуск
+        self.btn_process = tk.Button(left, text=" Запустить обработку", 
+                                    command=self.start_processing,
+                                    bg='#2196F3', fg='white', font=('Arial', 12, 'bold'),
+                                    height=2, state='disabled')
+        self.btn_process.pack(fill='x', pady=15)
+        
+        self.progress = ttk.Progressbar(left, length=280, mode='determinate')
+        self.progress.pack(fill='x', pady=5)
+        
+        self.status = tk.Label(left, text=" Готов", fg='green', font=('Arial', 10))
+        self.status.pack(pady=5)
+        
+        # Статистика
+        tk.Label(left, text="📊 Статистика:", font=('Arial', 11, 'bold')).pack(anchor='w', pady=(10,0))
+        self.stats = tk.Text(left, height=14, width=35, font=('Courier', 10), bg='#f8f8f8')
+        self.stats.pack(fill='x', pady=5)
+        self.stats.insert('1.0', "Ожидание данных...")
+        self.stats.config(state='disabled')
+        
+        right = tk.Frame(main, bg='white', relief='ridge', bd=2)
+        right.pack(side='right', fill='both', expand=True, ipadx=10, ipady=10)
+        
+        # Навигация
+        nav = tk.Frame(right, bg='white')
+        nav.pack(fill='x', pady=5)
+        tk.Button(nav, text="◄", command=self.prev_img, 
+                 font=('Arial', 12), width=3).pack(side='left', padx=5)
+        self.nav_label = tk.Label(nav, text="0 / 0", font=('Arial', 12, 'bold'), bg='white')
+        self.nav_label.pack(side='left', expand=True)
+        tk.Button(nav, text="►", command=self.next_img, 
+                 font=('Arial', 12), width=3).pack(side='right', padx=5)
+        
+        # Изображение
+        self.img_container = tk.Frame(right, bg='#e0e0e0', height=450)
+        self.img_container.pack(fill='both', expand=True, pady=5)
+        self.img_label = tk.Label(self.img_container, bg='#e0e0e0', 
+                                 text="Выберите модель и папку", font=('Arial', 14))
+        self.img_label.pack(expand=True)
+        
+        # Информация
+        self.info = tk.Text(right, height=5, font=('Arial', 12), bg='#f8f8f8')
+        self.info.pack(fill='x', pady=5)
+        self.info.insert('1.0', "Информация об изображении")
+        self.info.config(state='disabled')
+    
+    def load_model_callback(self, event):
+        name = self.model_var.get()
+        path = self.models.get(name)
+        
+        if not path or not os.path.exists(path):
+            self.model_status.config(text=f" Файл не найден: {path}", fg='red')
+            self.model = None
+            self.btn_process.config(state='disabled')
+            return
+        
+        try:
+            self.model = load_model(path, num_classes=2)
+            self.model_path = path
+            self.model_status.config(text=f" ✓ {name} загружена", fg='green')
+            self.btn_process.config(state='normal' if self.folder else 'disabled')
+        except Exception as e:
+            self.model_status.config(text=f" Ошибка: {str(e)[:50]}", fg='red')
+            self.model = None
+            self.btn_process.config(state='disabled')
+    
+    def select_folder(self):
+        folder = filedialog.askdirectory()
+        if folder:
+            self.folder = folder
+            self.folder_path.set(folder)
+            count = self.count_images(folder)
+            self.folder_status.config(text=f" {count} изображений", fg='green')
+            self.btn_process.config(state='normal' if self.model else 'disabled')
+    
+    def count_images(self, folder):
+        exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
+        return sum(1 for root, _, files in os.walk(folder) 
+                  for f in files if Path(f).suffix.lower() in exts)
+    
+    def get_images(self, folder):
+        exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
+        return [os.path.join(root, f) for root, _, files in os.walk(folder) 
+                for f in files if Path(f).suffix.lower() in exts]
+    
+    def start_processing(self):
+        if not self.model or not self.folder:
+            return
+        
+        self.btn_process.config(state='disabled')
+        self.progress['value'] = 0
+        self.results = []
+        self.current_idx = 0
+        
+        threading.Thread(target=self.process_images, daemon=True).start()
+    
+    def process_images(self):
+        images = self.get_images(self.folder)
+        if not images:
+            self.root.after(0, lambda: messagebox.showwarning("Внимание", "Нет изображений"))
+            self.root.after(0, self.reset_ui)
+            return
+        
+        total = len(images)
+        self.root.after(0, lambda: self.progress.configure(maximum=total))
+        
+        for i, img_path in enumerate(images, 1):
+            try:
+                img = Image.open(img_path).convert('RGB')
+                inp = self.transform(img).unsqueeze(0)
+                
+                with torch.no_grad():
+                    out = self.model(inp)
+                    prob = torch.nn.functional.softmax(out, dim=1)
+                    conf, pred = torch.max(prob, 1)
+                
+                class_id = pred.item()
+                class_name = CLASS_NAMES.get(class_id, f"Класс {class_id}")
+                
+                self.results.append({
+                    'path': img_path,
+                    'filename': os.path.basename(img_path),
+                    'class_id': class_id,
+                    'class_name': class_name,
+                    'confidence': conf.item(),
+                    'conf_str': f"{conf.item()*100:.2f}%"
+                })
+            except Exception as e:
+                self.results.append({
+                    'path': img_path,
+                    'filename': os.path.basename(img_path),
+                    'class_id': -1,
+                    'class_name': '❌ Ошибка',
+                    'confidence': 0,
+                    'conf_str': '0%'
+                })
+            
+            self.root.after(0, lambda v=i: self.progress.configure(value=v))
+            self.root.after(0, lambda v=f"{i}/{total}": 
+                          self.status.config(text=f"⏳ Обработка: {v}", fg='blue'))
+        
+        self.save_results()
+        self.root.after(0, self.show_stats)
+        if self.results:
+            self.root.after(0, lambda: self.show_image(0))
+        
+        self.root.after(0, self.reset_ui)
+        self.root.after(0, lambda: messagebox.showinfo("✅ Готово", 
+                          f"Обработано: {len(self.results)} изображений"))
+    
+    def save_results(self):
+        data = [{'Файл': r['filename'], 'Статус': r['class_name'], 
+                'Уверенность': r['conf_str']} for r in self.results]
+        df = pd.DataFrame(data)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        df.to_excel(f'parking_results_{ts}.xlsx', index=False)
+    
+    def show_stats(self):
+        total = len(self.results)
+        ok = [r for r in self.results if r['class_id'] != -1]
+        err = total - len(ok)
+        
+        free = sum(1 for r in ok if r['class_id'] == 0)
+        occupied = sum(1 for r in ok if r['class_id'] == 1)
+        
+        avg_conf = sum(r['confidence'] for r in ok) / len(ok) * 100 if ok else 0
+        
+        stats_text = f"""
+ СТАТИСТИКА ОБРАБОТКИ
+{'='*30}
+ Всего изображений: {total}
+ Успешно: {len(ok)}
+ Ошибок: {err}
+ Ср. уверенность: {avg_conf:.2f}%
+
+ РАСПРЕДЕЛЕНИЕ:
+ СВОБОДНО: {free} ({free/len(ok)*100:.1f}%{' ' if ok else '0%'})
+ ЗАНЯТО: {occupied} ({occupied/len(ok)*100:.1f}%{' ' if ok else '0%'})
+"""
+        
+        self.stats.config(state='normal')
+        self.stats.delete('1.0', tk.END)
+        self.stats.insert('1.0', stats_text)
+        self.stats.config(state='disabled')
+    
+    def show_image(self, idx):
+        if not self.results or idx >= len(self.results):
+            return
+        
+        self.current_idx = idx
+        r = self.results[idx]
+        self.nav_label.config(text=f"{idx+1} / {len(self.results)}")
+        
+        try:
+            img = Image.open(r['path'])
+            img.thumbnail((550, 420), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            self.img_label.config(image=photo, text='')
+            self.img_label.image = photo
+        except:
+            self.img_label.config(image='', text="❌ Ошибка загрузки")
+        
+        color = CLASS_COLORS.get(r['class_id'], '#666')
+        
+        self.info.config(state='normal')
+        self.info.delete('1.0', tk.END)
+        self.info.insert('1.0', f" Файл: {r['filename']}\n")
+        self.info.insert('1.0', f" Статус: {r['class_name']}\n", ('status',))
+        self.info.insert('1.0', f" Уверенность: {r['conf_str']}\n")
+        
+        self.info.tag_config('status', foreground=color, font=('Arial', 13, 'bold'))
+        self.info.config(state='disabled')
+    
+    def prev_img(self):
+        if self.current_idx > 0:
+            self.show_image(self.current_idx - 1)
+    
+    def next_img(self):
+        if self.current_idx < len(self.results) - 1:
+            self.show_image(self.current_idx + 1)
+    
+    def reset_ui(self):
+        self.btn_process.config(state='normal')
+        self.status.config(text=" Готов", fg='green')
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = App(root)
+    root.mainloop()
