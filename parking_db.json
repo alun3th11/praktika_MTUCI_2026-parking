@@ -1,0 +1,70 @@
+{
+  "meta": {
+    "created_at": "2026-07-03T03:44:52.081816",
+    "last_updated": "2026-07-03T03:44:52.083816",
+    "version": "1.0"
+  },
+  "models": [
+    {
+      "name": "ResNet-18",
+      "accuracy": 97.2,
+      "f1_score": 0.972,
+      "time_ms": 45.2,
+      "size_mb": 44.3,
+      "params": 11.7,
+      "date_trained": "2026-07-03T03:44:52.081841"
+    },
+    {
+      "name": "EfficientNet-B0",
+      "accuracy": 98.23,
+      "f1_score": 0.9825,
+      "time_ms": 6.94,
+      "size_mb": 15.6,
+      "params": 5.3,
+      "date_trained": "2026-07-03T03:44:52.082469"
+    }
+  ],
+  "training_history": [
+    {
+      "model": "EfficientNet-B0",
+      "epochs": 20,
+      "batch_size": 64,
+      "learning_rate": 0.001,
+      "train_time": 2048.19,
+      "best_val_acc": 99.23,
+      "date": "2026-07-03T03:44:52.082934"
+    }
+  ],
+  "predictions": [
+    {
+      "image": "test1.jpg",
+      "model": "EfficientNet-B0",
+      "prediction": "Busy",
+      "confidence": 98.23,
+      "timestamp": "2026-07-03T03:44:52.083356"
+    },
+    {
+      "image": "test2.jpg",
+      "model": "EfficientNet-B0",
+      "prediction": "Free",
+      "confidence": 97.45,
+      "timestamp": "2026-07-03T03:44:52.083810"
+    }
+  ],
+  "statistics": {
+    "total_models": 2,
+    "best_model": {
+      "name": "EfficientNet-B0",
+      "accuracy": 98.23
+    },
+    "fastest_model": {
+      "name": "EfficientNet-B0",
+      "time_ms": 6.94
+    },
+    "smallest_model": {
+      "name": "EfficientNet-B0",
+      "size_mb": 15.6
+    },
+    "total_predictions": 0
+  }
+}
