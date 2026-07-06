@@ -1,0 +1,298 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import datasets, transforms, models
+from torch.utils.data import DataLoader, random_split
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+import numpy as np
+import time
+import os
+import pandas as pd
+from tqdm import tqdm
+import warnings
+warnings.filterwarnings('ignore')
+
+DATA_PATH = 'c:/praktika'
+BATCH_SIZE = 64
+NUM_EPOCHS = 20  
+LEARNING_RATE = 0.001
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Используется устройство: {DEVICE}")
+
+def load_data():
+    # Преобразования
+    transform_train = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(10),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    transform_test = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    # Загружаем данные
+    train_data = datasets.ImageFolder(os.path.join(DATA_PATH, 'train'), transform=transform_train)
+    valid_data = datasets.ImageFolder(os.path.join(DATA_PATH, 'valid'), transform=transform_test)
+    test_data = datasets.ImageFolder(os.path.join(DATA_PATH, 'test'), transform=transform_test)
+    
+    # Создаем загрузчики
+    train_loader = DataLoader(train_data, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
+    valid_loader = DataLoader(valid_data, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+    test_loader = DataLoader(test_data, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+    
+    return train_loader, valid_loader, test_loader, train_data.classes
+
+def train_model(model, train_loader, valid_loader, model_name, epochs=NUM_EPOCHS):
+    print(f"\n{'='*50}")
+    print(f"Обучение: {model_name}")
+    print(f"{'='*50}")
+    
+    model = model.to(DEVICE)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=2)
+    
+    train_losses = []
+    val_accuracies = []
+    best_val_acc = 0
+    start_time = time.time()
+    
+    for epoch in range(epochs):
+        # Обучение
+        model.train()
+        running_loss = 0.0
+        for images, labels in tqdm(train_loader, desc=f'Epoch {epoch+1}/{epochs} [Train]'):
+            images, labels = images.to(DEVICE), labels.to(DEVICE)
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+        
+        avg_loss = running_loss / len(train_loader)
+        train_losses.append(avg_loss)
+        
+        # Валидация
+        model.eval()
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for images, labels in valid_loader:
+                images, labels = images.to(DEVICE), labels.to(DEVICE)
+                outputs = model(images)
+                _, predicted = torch.max(outputs, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+        
+        val_acc = 100 * correct / total
+        val_accuracies.append(val_acc)
+        scheduler.step(val_acc)
+        
+        print(f'Epoch {epoch+1}/{epochs}: Loss={avg_loss:.4f}, Val Acc={val_acc:.2f}%')
+        
+        # Сохраняем лучшую модель
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            torch.save(model.state_dict(), f'best_{model_name}.pth')
+    
+    training_time = time.time() - start_time
+    print(f"Обучение завершено за {training_time:.2f} секунд")
+    
+    return train_losses, val_accuracies, best_val_acc, training_time
+
+def test_model(model, test_loader, model_name):
+    print(f"\nТестирование: {model_name}")
+    model.eval()
+    all_preds = []
+    all_labels = []
+    start_time = time.time()
+    
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images, labels = images.to(DEVICE), labels.to(DEVICE)
+            outputs = model(images)
+            _, predicted = torch.max(outputs, 1)
+            all_preds.extend(predicted.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+    
+    inference_time = time.time() - start_time
+    avg_time_per_image = (inference_time / len(test_loader.dataset)) * 1000  # мс
+    
+    # Метрики
+    accuracy = accuracy_score(all_labels, all_preds)
+    precision = precision_score(all_labels, all_preds, average='weighted')
+    recall = recall_score(all_labels, all_preds, average='weighted')
+    f1 = f1_score(all_labels, all_preds, average='weighted')
+    cm = confusion_matrix(all_labels, all_preds)
+    
+    return {
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'confusion_matrix': cm,
+        'time_ms': avg_time_per_image,
+        'predictions': all_preds,
+        'labels': all_labels
+    }
+
+def create_model(model_name):
+    if model_name == 'ResNet-18':
+        model = models.resnet18(pretrained=True)
+        model.fc = nn.Linear(512, 2)
+    elif model_name == 'ResNet-50':
+        model = models.resnet50(pretrained=True)
+        model.fc = nn.Linear(2048, 2)
+    elif model_name == 'EfficientNet-B0':
+        model = models.efficientnet_b0(pretrained=True)
+        model.classifier[1] = nn.Linear(1280, 2)
+    elif model_name == 'MobileNetV3':
+        model = models.mobilenet_v3_large(pretrained=True)
+        model.classifier[3] = nn.Linear(1280, 2)
+    elif model_name == 'ViT':
+        model = models.vit_b_16(pretrained=True)
+        model.heads = nn.Linear(768, 2)
+    else:
+        raise ValueError(f"Неизвестная модель: {model_name}")
+    return model
+
+def plot_results(results_df):
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    
+    # 1. Accuracy сравнение
+    ax1 = axes[0, 0]
+    bars = ax1.bar(results_df['Model'], results_df['Accuracy'])
+    ax1.set_title('Accuracy сравнение моделей')
+    ax1.set_ylabel('Accuracy (%)')
+    ax1.set_xlabel('Модель')
+    ax1.set_ylim(0, 100)
+    for bar, val in zip(bars, results_df['Accuracy']):
+        ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, f'{val:.2f}%', ha='center')
+    
+    # 2. Время инференса
+    ax2 = axes[0, 1]
+    bars = ax2.bar(results_df['Model'], results_df['Time_ms'])
+    ax2.set_title('Скорость инференса')
+    ax2.set_ylabel('Время на изображение (мс)')
+    ax2.set_xlabel('Модель')
+    for bar, val in zip(bars, results_df['Time_ms']):
+        ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5, f'{val:.1f}мс', ha='center')
+    
+    # 3. F1-score
+    ax3 = axes[1, 0]
+    bars = ax3.bar(results_df['Model'], results_df['F1'])
+    ax3.set_title('F1-score сравнение')
+    ax3.set_ylabel('F1-score')
+    ax3.set_xlabel('Модель')
+    ax3.set_ylim(0, 1)
+    for bar, val in zip(bars, results_df['F1']):
+        ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, f'{val:.3f}', ha='center')
+    
+    ax4 = axes[1, 1]
+    bars = ax4.bar(results_df['Model'], results_df['Size_MB'])
+    ax4.set_title('Размер модели')
+    ax4.set_ylabel('Размер (МБ)')
+    ax4.set_xlabel('Модель')
+    for bar, val in zip(bars, results_df['Size_MB']):
+        ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, f'{val:.1f}МБ', ha='center')
+    
+    plt.tight_layout()
+    plt.savefig('model_comparison.png', dpi=300)
+    plt.show()
+    
+def main():
+    print(" НАЧИНАЕМ ОБУЧЕНИЕ 5 МОДЕЛЕЙ")
+    print(f"Устройство: {DEVICE}")
+    
+    # Загрузка данных
+    train_loader, valid_loader, test_loader, classes = load_data()
+    print(f"Классы: {classes}")
+    print(f"Размер train: {len(train_loader.dataset)}")
+    print(f"Размер valid: {len(valid_loader.dataset)}")
+    print(f"Размер test: {len(test_loader.dataset)}")
+    
+    # Список моделей для обучения
+    model_names = ['ResNet-18', 'ResNet-50', 'EfficientNet-B0', 'MobileNetV3', 'ViT']
+    all_results = []
+    
+    for name in model_names:
+        # Создаем модель
+        model = create_model(name)
+        
+        # Обучаем
+        train_losses, val_accuracies, best_val_acc, train_time = train_model(
+            model, train_loader, valid_loader, name, epochs=NUM_EPOCHS
+        )
+        
+        # Загружаем лучшую версию
+        model.load_state_dict(torch.load(f'best_{name}.pth'))
+        
+        # Тестируем
+        test_results = test_model(model, test_loader, name)
+        
+        # Размер модели
+        model_size = os.path.getsize(f'best_{name}.pth') / (1024 * 1024)
+        
+        # Сохраняем результаты
+        all_results.append({
+            'Model': name,
+            'Accuracy': test_results['accuracy'] * 100,
+            'Precision': test_results['precision'],
+            'Recall': test_results['recall'],
+            'F1': test_results['f1'],
+            'Time_ms': test_results['time_ms'],
+            'Size_MB': model_size,
+            'Train_Time_s': train_time,
+            'Best_Val_Acc': best_val_acc,
+            'Confusion_Matrix': test_results['confusion_matrix']
+        })
+        
+        print(f"\n {name} завершена!")
+        print(f"  Accuracy: {test_results['accuracy']*100:.2f}%")
+        print(f"  F1: {test_results['f1']:.4f}")
+        print(f"  Время: {test_results['time_ms']:.2f}мс на изображение")
+        print(f"  Размер: {model_size:.1f}МБ")
+    
+    # Создаем DataFrame
+    results_df = pd.DataFrame(all_results)
+    
+    # Сохраняем в Excel
+    results_df.to_excel('model_results.xlsx', index=False)
+    print("\n Результаты сохранены в model_results.xlsx")
+    
+    # Визуализация
+    plot_results(results_df)
+    
+    # Вывод лучшей модели
+    best_model = results_df.loc[results_df['Accuracy'].idxmax()]
+    print(f"\n ЛУЧШАЯ МОДЕЛЬ: {best_model['Model']}")
+    print(f"  Accuracy: {best_model['Accuracy']:.2f}%")
+    print(f"  F1: {best_model['F1']:.4f}")
+    print(f"  Время инференса: {best_model['Time_ms']:.2f}мс")
+    print(f"  Размер: {best_model['Size_MB']:.1f}МБ")
+    
+    print("\n ВСЁ ГОТОВО! Можешь смотреть результаты.")
+    
+    # Сохраняем конфигурацию
+    config = {
+        'num_epochs': NUM_EPOCHS,
+        'batch_size': BATCH_SIZE,
+        'learning_rate': LEARNING_RATE,
+        'device': str(DEVICE),
+        'classes': classes
+    }
+    pd.DataFrame([config]).to_json('config.json')
+    
+    return results_df
+
+if __name__ == "__main__":
+    results = main()
