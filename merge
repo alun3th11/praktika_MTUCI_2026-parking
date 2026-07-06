@@ -1,0 +1,150 @@
+import pandas as pd
+import os
+import shutil
+import glob
+
+def organize_data(split_name, dataset_path):
+    """
+    Функция для разложения изображений по папкам классов
+    split_name: 'train', 'valid' или 'test'
+    dataset_path: путь к папке с данными
+    """
+    # Путь к папке со сплитом
+    base_path = os.path.join(dataset_path, split_name)
+    
+    # Путь к CSV-файлу
+    csv_path = os.path.join(base_path, '_classes.csv')
+    
+    # Проверяем, существует ли CSV файл
+    if not os.path.exists(csv_path):
+        print(f"Файл {csv_path} не найден! Пропускаем {split_name}")
+        return
+    
+    # Загружаем CSV
+    df = pd.read_csv(csv_path)
+    
+    # Выводим информацию о данных
+    print(f"\n=== Обработка {split_name} ===")
+    print(f"Колонки в CSV: {df.columns.tolist()}")
+    print(f"Всего записей: {len(df)}")
+    
+    # Создаем папки для классов (если их нет)
+    busy_path = os.path.join(base_path, 'Busy')
+    free_path = os.path.join(base_path, 'Free')
+    os.makedirs(busy_path, exist_ok=True)
+    os.makedirs(free_path, exist_ok=True)
+    
+    # Счетчики для статистики
+    busy_count = 0
+    free_count = 0
+    unknown_count = 0
+    errors = 0
+    
+    # Проходим по каждой строке в CSV
+    for index, row in df.iterrows():
+        # Имя файла
+        filename = str(row['filename'])
+        
+        # ПРАВИЛЬНО получаем значения классов
+        is_empty = row[' space-empty']  # с пробелом в начале
+        is_occupied = row[' space-occupied']  # с пробелом в начале
+        
+        # Определяем класс
+        if is_empty == 1:
+            class_folder = 'Free'
+            free_count += 1
+        elif is_occupied == 1:
+            class_folder = 'Busy'
+            busy_count += 1
+        else:
+            # Если оба = 0, считаем это свободным местом (или ошибкой)
+            print(f"⚠ Неизвестный класс для {filename}: empty={is_empty}, occupied={is_occupied} -> считаем Free")
+            class_folder = 'Free'
+            free_count += 1
+            unknown_count += 1
+        
+        # Ищем файл в папке и подпапках
+        src_path = None
+        for root, dirs, files in os.walk(base_path):
+            if filename in files:
+                src_path = os.path.join(root, filename)
+                break
+        
+        # Если файл не найден, пробуем искать без .rf. части
+        if src_path is None:
+            base_name = filename.split('.rf.')[0]
+            for root, dirs, files in os.walk(base_path):
+                for file in files:
+                    if file.startswith(base_name) and file.endswith('.jpg'):
+                        src_path = os.path.join(root, file)
+                        print(f"✓ Найден альтернативный файл: {file} вместо {filename}")
+                        break
+                if src_path:
+                    break
+        
+        if src_path:
+            # Путь к целевой папке
+            dest_folder = os.path.join(base_path, class_folder)
+            dest_path = os.path.join(dest_folder, filename)
+            
+            # Перемещаем файл (если он еще не перемещен)
+            if os.path.exists(src_path):
+                shutil.move(src_path, dest_path)
+                print(f"✓ {filename} -> {class_folder}")
+            else:
+                print(f"✗ Файл уже перемещен: {src_path}")
+                errors += 1
+        else:
+            print(f"✗ Файл не найден: {filename}")
+            errors += 1
+    
+    # Выводим статистику
+    print(f"\nСтатистика для {split_name}:")
+    print(f"  Занятых (Busy): {busy_count}")
+    print(f"  Свободных (Free): {free_count}")
+    if unknown_count > 0:
+        print(f"  Неизвестных (обработаны как Free): {unknown_count}")
+    print(f"  Ошибок: {errors}")
+    print("=" * 40)
+
+def main():
+    """
+    Главная функция
+    """
+    print("Начинаем обработку датасета PKLot...")
+    
+    # Указываем путь к папке с данными
+    dataset_path = r'c:/praktika'
+    
+    # Проверяем, существует ли папка с датасетом
+    if not os.path.exists(dataset_path):
+        print(f"ВНИМАНИЕ: Папка {dataset_path} не найдена!")
+        print("Проверь путь к папке с данными!")
+        return
+    
+    print(f"Путь к данным: {dataset_path}")
+    
+    # Проверяем, есть ли папки train, valid, test
+    for folder in ['train', 'valid', 'test']:
+        folder_path = os.path.join(dataset_path, folder)
+        if not os.path.exists(folder_path):
+            print(f"ВНИМАНИЕ: Папка {folder_path} не найдена!")
+            print(f"Содержимое папки {dataset_path}: {os.listdir(dataset_path)}")
+            return
+    
+    # Обрабатываем каждую папку
+    for split in ['train', 'valid', 'test']:
+        organize_data(split, dataset_path)
+    
+    print("\n Готово! Все файлы разложены по папкам Busy/Free")
+    print("\nТеперь структура папок выглядит так:")
+    print("train/")
+    print("  ├── Busy/")
+    print("  │   └── (изображения занятых мест)")
+    print("  ├── Free/")
+    print("  │   └── (изображения свободных мест)")
+    print("  └── _classes.csv (можно удалить)")
+    print("\nvalid/ и test/ имеют такую же структуру")
+
+if __name__ == "__main__":
+    main()
